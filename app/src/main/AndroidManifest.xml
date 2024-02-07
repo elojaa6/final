@@ -28,7 +28,22 @@
         android:theme="@style/Theme.Final"
         tools:targetApi="31">
         <activity
+            android:name=".Mango"
+            android:exported="false" />
+        <activity
+            android:name=".Uva"
+            android:exported="false" />
+        <activity
+            android:name=".Banana"
+            android:exported="false" />
+        <activity
+            android:name=".Frutilla"
+            android:exported="false" />
+        <activity
             android:name=".MainActivity"
+            android:exported="false" />
+        <activity
+            android:name=".Menu"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

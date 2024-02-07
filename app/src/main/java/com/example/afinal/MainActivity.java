@@ -1,12 +1,9 @@
 package com.example.afinal;
 
-import androidx.appcompat.app.AppCompatActivity;
-
 import android.content.res.AssetManager;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.SurfaceView;
-import android.view.WindowManager;
 import android.widget.TextView;
 
 import com.example.afinal.databinding.ActivityMainBinding;
@@ -19,6 +16,9 @@ import org.opencv.android.OpenCVLoader;
 import org.opencv.core.Mat;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
 
@@ -30,18 +30,8 @@ public class MainActivity extends CameraActivity {
     }
 
     private static String LOGTAG = "OpenCV_Log";
-
-    // Camara
     private CameraBridgeViewBase mOpenCvCameraView;
-
-    // Funciones
-
-    public native String[] loadCOCO(AssetManager assetManager);
-
-    public native void Model(AssetManager assetManager, String modelPath);
-
-    public native void Detect(long addrRGBA);
-
+    private File cascadeFile;
     private BaseLoaderCallback mLoaderCallBack = new BaseLoaderCallback(this) {
         @Override
         public void onManagerConnected(int status) {
@@ -59,25 +49,70 @@ public class MainActivity extends CameraActivity {
         }
     };
 
+    private ActivityMainBinding binding;
+
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        setContentView(R.layout.activity_main);
 
-        AssetManager assetManager = getResources().getAssets();
-        //Carga del modelo
-        Model(assetManager, "frutasv5best.onnx");
-        //Carga los labels
-        loadCOCO(assetManager);
+        binding = ActivityMainBinding.inflate(getLayoutInflater());
 
+        fileOnnx();
+        fileCoco();
+
+        setContentView(binding.getRoot());
         mOpenCvCameraView = (CameraBridgeViewBase) findViewById(R.id.CameraView);
         mOpenCvCameraView.setVisibility(SurfaceView.VISIBLE);
         mOpenCvCameraView.setCvCameraViewListener(cvCameraViewListener);
+
     }
 
+    private void fileOnnx(){
+
+        try{
+            cascadeFile = new File(getCacheDir(), "Naranjav5.onnx");
+            if (!cascadeFile.exists()){
+                InputStream inputStream = getAssets().open("Naranjav5.onnx");
+                FileOutputStream outputStream = new FileOutputStream(cascadeFile);
+                byte[] buffer = new byte[2048];
+                int bytesRead = -1;
+                while((bytesRead = inputStream.read(buffer)) != -1){
+                    outputStream.write(buffer, 0, bytesRead);
+                }
+                inputStream.close();
+                outputStream.close();
+            }
+            loadNetwork(cascadeFile.getAbsolutePath());
+        }catch (IOException e){
+            e.printStackTrace();
+        }
+    }
+
+    private void fileCoco(){
+
+        try{
+            cascadeFile = new File(getCacheDir(), "coco.names");
+            if (!cascadeFile.exists()){
+                InputStream inputStream = getAssets().open("coco.names");
+                FileOutputStream outputStream = new FileOutputStream(cascadeFile);
+                byte[] buffer = new byte[2048];
+                int bytesRead = -1;
+                while((bytesRead = inputStream.read(buffer)) != -1){
+                    outputStream.write(buffer, 0, bytesRead);
+                }
+                inputStream.close();
+                outputStream.close();
+            }
+            loadCoco(cascadeFile.getAbsolutePath());
+        }catch (IOException e){
+            e.printStackTrace();
+        }
+    }
+
+
     @Override
-    protected List<?extends CameraBridgeViewBase> getCameraViewList(){
+    protected List<? extends CameraBridgeViewBase> getCameraViewList(){
         return Arrays.asList(mOpenCvCameraView);
     }
 
@@ -95,12 +130,11 @@ public class MainActivity extends CameraActivity {
         @Override
         public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame){
             Mat mRgba = inputFrame.rgba();
+            processCameraFrame(mRgba.getNativeObjAddr());
 
-            Detect(mRgba.getNativeObjAddr());
             return mRgba;
         }
     };
-
 
     public void onPause(){
         super.onPause();
@@ -124,6 +158,9 @@ public class MainActivity extends CameraActivity {
         if (mOpenCvCameraView != null) {
             mOpenCvCameraView.disableView();
         }
-
     }
+    public native void processCameraFrame(long inputMatAddr);
+    public native void loadNetwork(String absolutePath);
+    public native void loadCoco(String absolutePath);
+
 }

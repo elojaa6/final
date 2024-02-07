@@ -1,230 +1,485 @@
 #include <jni.h>
-#include <string>
-#include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
-#include <opencv2/dnn.hpp>
-#include <opencv2/video.hpp>
-#include "android/bitmap.h"
-#include <android/asset_manager.h>
-#include <android/asset_manager_jni.h>
-#include <iostream> // Librería estándar para leer y escribir datos en la consola, obtener los errores y loggs
-#include <cstdlib> // Librería estándar para generación de números aleatorios, manejo de memoria, etc.
-#include <android/log.h>
-
-#include <cstring> // Tiene métodos para el manejo de cadenas de texto
-#include <cmath> // Define las funciones matemáticas
-
-#include <random> // Librería para generación de números aleatorios
-#include <vector> // Librería para definir arreglos dinámicos
-#include <sstream> // Librería para conversión de datos y manejo de flujos
-#include <fstream> // Librería para manejar flujos de datos (archivos)
-
-#include <filesystem> // Librería que contiene las funciones para listar archivos y carpetas
-
-// Librerías de OpenCV
-#include <opencv2/core/core.hpp> // Contiene las definiciones básicas de las matrices que representan imágenes y otras estructuras
-#include <opencv2/highgui/highgui.hpp> // Contiene las definiciones y funciones para crear GUIs
-#include <opencv2/imgproc/imgproc.hpp> // Permite realizar procesamiento de imágenes
-#include <opencv2/imgcodecs/imgcodecs.hpp> // Permite gestionar los códecs para lectura de formatos gráficos
-#include <opencv2/video/video.hpp> // Permite reproducir archivos de vídeo
-#include <opencv2/videoio/videoio.hpp> // Permite almacenar vídeos
-
-// DNN Module
+#include <opencv2/opencv.hpp>
 #include <opencv2/dnn/dnn.hpp>
-//ONNX Module
+#include <iostream>
+#include <cstdlib>
+#include <cstdio>
+#include <android/log.h>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <chrono>
+#include <unistd.h>
+using namespace std;
+using namespace cv;
+using namespace dnn;
 
-
-cv::dnn::Net neuralNetwork;
-
-
-std::vector<std::string> etiquetas;
+// Constant definitions
 const float IMG_WIDTH = 640.0;
 const float IMG_HEIGHT = 640.0;
 const float CLASS_PROBABILITY = 0.5;
 const float NMS_THRESHOLD = 0.5;
 const float CONFIDENCE_THRESHOLD = 0.5;
-const int NUMBER_OF_OUTPUTS = 85;
-cv::Scalar BLACK = cv::Scalar(0,0,0);
-cv::Scalar BLUE = cv::Scalar(255, 178, 50);
-cv::Scalar YELLOW = cv::Scalar(0, 255, 255);
-cv::Scalar RED = cv::Scalar(0,0,255);
+const int NUMBER_OF_OUTPUTS = 6;
 
 // Text parameters.
 const float FONT_SCALE = 0.7;
-const int FONT_FACE = cv::FONT_HERSHEY_SIMPLEX;
+const int FONT_FACE = FONT_HERSHEY_SIMPLEX;
 const int THICKNESS = 1;
 
-std::vector<std::string> loadCOCO(AAssetManager *assetManager, const char *filename, char sep = '\n') {
-    std::vector<std::string> names;
+// Variables globales
+Net neuralNetwork;
+vector<string> clases;
 
-    // Abre el archivo desde la carpeta "assets"
-    AAsset *asset = AAssetManager_open(assetManager, filename, AASSET_MODE_BUFFER);
-    if (asset == nullptr) {
-        // Maneja el error si el archivo no se puede abrir
-        std::cerr << "Error al abrir el archivo " << filename << " desde assets." << std::endl;
-        return names;
-    }
 
-    // Obtiene un puntero al búfer de datos del archivo
-    const void *buffer = AAsset_getBuffer(asset);
+Scalar BLACK = Scalar(0,0,0);
+Scalar BLUE = Scalar(255, 178, 50);
+Scalar YELLOW = Scalar(0, 255, 255);
+Scalar RED = Scalar(0,0,255);
 
-    // Crea un flujo de entrada a partir del búfer de datos
-    std::istringstream bufferStream(static_cast<const char*>(buffer));
 
-    std::string token;
-    while (getline(bufferStream, token, sep)) {
-        if (token.size() > 1) {
+vector<string> loadLabelsCOCO(const string& path, char sep = '\n') {
+    vector<string> names;
+
+    string token = "";
+    ifstream buffer(path, ios::in);
+
+    while (getline(buffer, token, sep)) {
+        if (token.size() > 1)
             names.push_back(token);
-        }
     }
-    // Cierra el archivo
-    AAsset_close(asset);
-    etiquetas=names;
+
     return names;
 }
 
-void draw_label(cv::Mat& input_image, std::string label, int left, int top){
+void draw_label(Mat& input_image, string label, int left, int top){
     // Display the label at the top of the bounding box.
     int baseLine;
-    cv::Size label_size = cv::getTextSize(label, FONT_FACE, FONT_SCALE, THICKNESS, &baseLine);
-    top = std::max(top, label_size.height);
+    Size label_size = getTextSize(label, FONT_FACE, FONT_SCALE, THICKNESS, &baseLine);
+    top = max(top, label_size.height);
     // Top left corner.
-    cv::Point tlc = cv::Point(left, top);
+    Point tlc = Point(left, top);
     // Bottom right corner.
-    cv::Point brc = cv::Point(left + label_size.width, top + label_size.height + baseLine);
+    Point brc = Point(left + label_size.width, top + label_size.height + baseLine);
     // Draw white rectangle.
-    rectangle(input_image, tlc, brc, BLACK, cv::FILLED);
+    rectangle(input_image, tlc, brc, BLACK, FILLED);
     // Put the label on the black rectangle.
-    putText(input_image, label, cv::Point(left, top + label_size.height), FONT_FACE, FONT_SCALE, YELLOW, THICKNESS);
+    putText(input_image, label, Point(left, top + label_size.height), FONT_FACE, FONT_SCALE, YELLOW, THICKNESS);
 }
 
-std::vector<cv::Mat> forwardNET(cv::Mat inputImage, cv::dnn::Net net){
-    // Create a blob from the input image
-    cv::Mat blob;
-    cv::dnn::blobFromImage(inputImage, blob, 1./255., cv::Size(IMG_WIDTH, IMG_HEIGHT), cv::Scalar(), true, false);
+
+vector<Mat> forwardNET(Mat inputImage, Net net){
+
+    Mat blob;
+    blobFromImage(inputImage, blob, 1./255., Size(IMG_WIDTH, IMG_HEIGHT), Scalar(), true, false);
 
     net.setInput(blob);
 
-    // Forward pass.
-    std::vector<cv::Mat> outputs;
+    vector<Mat> outputs;
 
     net.forward(outputs, net.getUnconnectedOutLayersNames());
 
     return outputs;
 }
 
+Mat filterDetections(Mat inputImg, vector<Mat> detections, const vector<string> clases){
+    // Initialize vectors to hold respective outputs while unwrapping detections.
+    Mat inputImage=inputImg.clone();
+    vector<int> classIDs;
+    vector<float> confidences;
+    vector<Rect> boxes;
 
-cv::Mat filterDetections(cv::Mat inputImg, std::vector<cv::Mat> detections, const std::vector<std::string>& classNames) {
-    cv::Mat inputImage = inputImg.clone();
-    std::vector<int> classIDs;
-    std::vector<float> confidences;
-    std::vector<cv::Rect> boxes;
+    // Resizing factor.
     float x_factor = inputImage.cols / IMG_WIDTH;
     float y_factor = inputImage.rows / IMG_HEIGHT;
-    float* pData = new float[NUMBER_OF_OUTPUTS];
+    float *pData = new float[NUMBER_OF_OUTPUTS]; // = (float *)detections[0].data;
     float confidence = 0.0;
-    float* probValues;
-    cv::Point classId;
+    float *probValues;
+    Point classId;
     double maxClassProb = 0.0;
-    cv::Mat probabilityClasses = cv::Mat::zeros(1, classNames.size(), CV_32FC1);
-    int totalDetections = detections[0].total() / NUMBER_OF_OUTPUTS;
 
-    for (int i = 0; i < totalDetections; ++i) {
-        std::memcpy(pData, (float*) detections[0].data + (i * NUMBER_OF_OUTPUTS), NUMBER_OF_OUTPUTS * sizeof(float));
+    //Mat scores(1, clases.size(), CV_32FC1, classes_scores);
+    Mat probabilityClasses = Mat::zeros(1, clases.size(), CV_32FC1);
+
+    // Calculate the number of detections. It is important to note that the NUMBER_OF_OUTPUTS
+    // depends of the outputs of the neural network. In the case of YOLOv5 is 85 outpus (variables).
+    int totalDetections = detections[0].total() / NUMBER_OF_OUTPUTS;
+    cout << "Total of detections = " << totalDetections << endl;
+
+    // According to the documentation, the total of detections for YOLOv5 is 25200
+    // for default image size 640.
+
+    // Iterate through 25200 detections.
+    for (int i = 0; i < totalDetections; ++i){
+        std::memcpy(pData, (float *) detections[0].data+(i*NUMBER_OF_OUTPUTS), NUMBER_OF_OUTPUTS*sizeof(float));
         confidence = pData[4];
-        if (confidence >= CONFIDENCE_THRESHOLD) {
+        // Discard bad detections and continue.
+        if (confidence >= CONFIDENCE_THRESHOLD){
             probValues = (pData + 5);
-            probabilityClasses = cv::Mat::zeros(1, classNames.size(), CV_32FC1);
-            std::memcpy(probabilityClasses.data, probValues, classNames.size() * sizeof(float));
+            // Create a 1x85 Mat and store class scores of 80 classes.
+            probabilityClasses = Mat::zeros(1, clases.size(), CV_32FC1);
+            std::memcpy(probabilityClasses.data, probValues, clases.size()*sizeof(float));
+
+            // Perform minMaxLoc and acquire the index of best class  score.
             minMaxLoc(probabilityClasses, 0, &maxClassProb, 0, &classId);
-            if (maxClassProb > CLASS_PROBABILITY) {
+            // Continue if the class score is above the threshold.
+            if (maxClassProb > CLASS_PROBABILITY){
+                // Store class ID and confidence in the pre-defined respective vectors.
                 confidences.push_back(confidence);
                 classIDs.push_back(classId.x);
-                boxes.push_back(cv::Rect(int((pData[0] - 0.5 * pData[2]) * x_factor), int((pData[1] - 0.5 * pData[3]) * y_factor),
-                                         int(pData[2] * x_factor), int(pData[3] * y_factor)));
+                boxes.push_back(Rect(int((pData[0]-0.5*pData[2])*x_factor),int((pData[1]-0.5*pData[3])*y_factor),
+                                     int(pData[2]*x_factor), int(pData[3]*y_factor)));
+
             }
         }
     }
 
-    std::vector<int> indices;
-    std::string label = "";
-    cv::dnn::NMSBoxes(boxes, confidences, CLASS_PROBABILITY, NMS_THRESHOLD, indices);
-    for (int i = 0; i < indices.size(); i++) {
-        int idx = indices[i];
-        cv::rectangle(inputImage, boxes[indices[i]], BLUE, 3 * THICKNESS);
-        label = cv::format("%.2f", confidences[indices[idx]]);
-        label = classNames[classIDs[indices[i]]] + ":" + label;
+
+    // Perform Non-Maximum Suppression and draw predictions.
+    vector<int> indices;
+    string label = "";
+    NMSBoxes(boxes, confidences, CLASS_PROBABILITY, NMS_THRESHOLD, indices);
+    for (int i = 0; i < indices.size(); i++){
+        // Draw the bounding box arround detected object
+        rectangle(inputImage, boxes[indices[i]], BLUE, 3*THICKNESS);
+        // Get the label for the class name and its confidence.
+        label = format("%.2f", confidences[indices[i]]);
+        label = clases[classIDs[indices[i]]] + ":" + label;
+        // Draw class labels.
         draw_label(inputImage, label, boxes[indices[i]].x, boxes[indices[i]].y);
     }
     return inputImage;
 }
 
-
-
-
-
-extern "C"
-JNIEXPORT jobjectArray JNICALL
-Java_com_example_afinal_MainActivity_loadCOCO(JNIEnv *env, jobject instance,
-                                                    jobject asset_manager) {const char *filename = "coco.names";
-
-    // Obtiene el puntero al AssetManager desde el objeto Java
-    AAssetManager *mgr = AAssetManager_fromJava(env, asset_manager);
-
-    // Llama a la función loadLabelsCOCO para cargar las etiquetas desde assets
-    std::vector<std::string> labels = loadCOCO(mgr, filename);
-
-    // Convierte el vector de cadenas C++ a un array de cadenas Java
-    jobjectArray result = env->NewObjectArray(labels.size(), env->FindClass("java/lang/String"), nullptr);
-    for (size_t i = 0; i < labels.size(); ++i) {
-        env->SetObjectArrayElement(result, i, env->NewStringUTF(labels[i].c_str()));
+long getMemoryUsage() {
+    ifstream statm("/proc/self/statm");
+    if (!statm.is_open()) {
+        return -1;  // Error al abrir el archivo
     }
 
-    return result;
-}
+    long size, resident, share, text, lib, data, dt;
+    statm >> size >> resident >> share >> text >> lib >> data >> dt;
+    statm.close();
 
-
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_example_afinal_MainActivity_Model(JNIEnv *env, jobject instance, jobject asset_manager,
-                                            jstring model_path) {
-    AAssetManager *mgr = AAssetManager_fromJava(env,asset_manager);
-    const char *modelPathStr = env->GetStringUTFChars(model_path, nullptr);
-    AAsset *modelAsset = AAssetManager_open(mgr, modelPathStr, AASSET_MODE_BUFFER);
-    env->ReleaseStringUTFChars(model_path, modelPathStr);
-    if (modelAsset != nullptr) {
-        off_t modelSize = AAsset_getLength(modelAsset);
-        const void *modelData = AAsset_getBuffer(modelAsset);
-        const uchar* modelDataUChar = static_cast<const uchar*>(modelData);
-        std::vector<uchar> modelBuffer(modelDataUChar, modelDataUChar + modelSize);
-        AAsset_close(modelAsset);
-        cv::Mat modelMat(modelBuffer);
-        __android_log_print(ANDROID_LOG_INFO, "Elvis6", "Cargando el modelo");
-
-        neuralNetwork = cv::dnn::readNetFromONNX(modelMat);
-        if (!neuralNetwork.empty()) {
-            // El modelo se cargó correctamente, puedes imprimir un mensaje
-            __android_log_print(ANDROID_LOG_INFO, "Elvis6", "Cargo el modelo");
-        } else {
-            __android_log_print(ANDROID_LOG_ERROR, "Elvis6", "No carga modelo 2");
-        }
-    }  else {
-        __android_log_print(ANDROID_LOG_ERROR, "Elvis6", "No carga modelo 1");
-    }
+    return resident * sysconf(_SC_PAGESIZE) / 1024;
 }
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_example_afinal_MainActivity_Detect(JNIEnv *env, jobject instance, jlong addr_rgba) {
-    cv::Mat* inputFrame = (cv::Mat*)addr_rgba;
+Java_com_example_afinal_MainActivity_processCameraFrame(JNIEnv *env, jobject thiz, jlong inputMatAddr) {
 
-    //std::vector<std::string> nombresCapas = neuralNetwork.getLayerNames();
+    // Obtener el objeto Mat desde la dirección pasada como argumento
+    Mat &frameMat = *(Mat *)inputMatAddr;
+    cvtColor(frameMat, frameMat, cv::COLOR_RGBA2RGB);
 
-    //nombresCapas = neuralNetwork.getUnconnectedOutLayersNames();
+    // Medir el tiempo de inicio para calcular FPS
+    auto startTime = chrono::high_resolution_clock::now();
 
-    std::vector<cv::Mat> detections;
-    detections = forwardNET(*inputFrame, neuralNetwork);
+    // Procesar la imagen con la red
+    vector<Mat> detections = forwardNET(frameMat, neuralNetwork);
+    Mat processedImg = filterDetections(frameMat, detections, clases);
 
-    filterDetections(*inputFrame,detections, etiquetas);
+    // Medir el tiempo de finalización y calcular FPS
+    auto endTime = chrono::high_resolution_clock::now();
+    auto elapsedTime = chrono::duration_cast<chrono::duration<double>>(endTime - startTime).count();
+    double fps = 1.0 / elapsedTime;  // FPS = 1 / tiempo transcurrido en segundos
 
+    // Medir el uso de memoria RAM
+    long ramUsage = getMemoryUsage();
+    double ramUsageMB = static_cast<double>(ramUsage) / 1024.0;  // Convertir a MB
+
+    // Mostrar el tiempo de inferencia
+    string label = format("Inference time: %.2f s", elapsedTime);
+    putText(processedImg, label, Point(20, 40), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar los FPS con dos decimales
+    string fpsLabel = format("FPS: %.2f", fps);
+    putText(processedImg, fpsLabel, Point(20, 80), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar el uso de memoria RAM
+    string ramLabel = format("RAM Usage: %.2f MB", ramUsageMB);
+    putText(processedImg, ramLabel, Point(20, 120), FONT_FACE, FONT_SCALE, RED);
+
+    // Copiar el resultado procesado de vuelta al objeto Mat original
+    processedImg.copyTo(frameMat);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_MainActivity_loadNetwork(JNIEnv *env, jobject thiz, jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Leer la red
+    neuralNetwork = cv::dnn::readNet(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_MainActivity_loadCoco(JNIEnv *env, jobject thiz, jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Llamar a la función para cargar las clases COCO
+    clases = loadLabelsCOCO(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Frutilla_processCameraFrameFrutilla(JNIEnv *env, jobject thiz,
+                                                            jlong input_mat_addr) {
+    // Obtener el objeto Mat desde la dirección pasada como argumento
+    Mat &frameMat = *(Mat *)input_mat_addr;
+    cvtColor(frameMat, frameMat, cv::COLOR_RGBA2RGB);
+
+    // Medir el tiempo de inicio para calcular FPS
+    auto startTime = chrono::high_resolution_clock::now();
+
+    // Procesar la imagen con la red
+    vector<Mat> detections = forwardNET(frameMat, neuralNetwork);
+    Mat processedImg = filterDetections(frameMat, detections, clases);
+
+    // Medir el tiempo de finalización y calcular FPS
+    auto endTime = chrono::high_resolution_clock::now();
+    auto elapsedTime = chrono::duration_cast<chrono::duration<double>>(endTime - startTime).count();
+    double fps = 1.0 / elapsedTime;  // FPS = 1 / tiempo transcurrido en segundos
+
+    // Medir el uso de memoria RAM
+    long ramUsage = getMemoryUsage();
+    double ramUsageMB = static_cast<double>(ramUsage) / 1024.0;  // Convertir a MB
+
+    // Mostrar el tiempo de inferencia
+    string label = format("Inference time: %.2f s", elapsedTime);
+    putText(processedImg, label, Point(20, 40), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar los FPS con dos decimales
+    string fpsLabel = format("FPS: %.2f", fps);
+    putText(processedImg, fpsLabel, Point(20, 80), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar el uso de memoria RAM
+    string ramLabel = format("RAM Usage: %.2f MB", ramUsageMB);
+    putText(processedImg, ramLabel, Point(20, 120), FONT_FACE, FONT_SCALE, RED);
+
+    // Copiar el resultado procesado de vuelta al objeto Mat original
+    processedImg.copyTo(frameMat);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Frutilla_loadNetworkFrutilla(JNIEnv *env, jobject thiz,
+                                                     jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Leer la red
+    neuralNetwork = cv::dnn::readNet(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Frutilla_loadCocoFrutilla(JNIEnv *env, jobject thiz,
+                                                  jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Llamar a la función para cargar las clases COCO
+    clases = loadLabelsCOCO(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Banana_processCameraFrameBanana(JNIEnv *env, jobject thiz,
+                                                        jlong input_mat_addr) {
+    // Obtener el objeto Mat desde la dirección pasada como argumento
+    Mat &frameMat = *(Mat *)input_mat_addr;
+    cvtColor(frameMat, frameMat, cv::COLOR_RGBA2RGB);
+
+    // Medir el tiempo de inicio para calcular FPS
+    auto startTime = chrono::high_resolution_clock::now();
+
+    // Procesar la imagen con la red
+    vector<Mat> detections = forwardNET(frameMat, neuralNetwork);
+    Mat processedImg = filterDetections(frameMat, detections, clases);
+
+    // Medir el tiempo de finalización y calcular FPS
+    auto endTime = chrono::high_resolution_clock::now();
+    auto elapsedTime = chrono::duration_cast<chrono::duration<double>>(endTime - startTime).count();
+    double fps = 1.0 / elapsedTime;  // FPS = 1 / tiempo transcurrido en segundos
+
+    // Medir el uso de memoria RAM
+    long ramUsage = getMemoryUsage();
+    double ramUsageMB = static_cast<double>(ramUsage) / 1024.0;  // Convertir a MB
+
+    // Mostrar el tiempo de inferencia
+    string label = format("Inference time: %.2f s", elapsedTime);
+    putText(processedImg, label, Point(20, 40), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar los FPS con dos decimales
+    string fpsLabel = format("FPS: %.2f", fps);
+    putText(processedImg, fpsLabel, Point(20, 80), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar el uso de memoria RAM
+    string ramLabel = format("RAM Usage: %.2f MB", ramUsageMB);
+    putText(processedImg, ramLabel, Point(20, 120), FONT_FACE, FONT_SCALE, RED);
+
+    // Copiar el resultado procesado de vuelta al objeto Mat original
+    processedImg.copyTo(frameMat);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Banana_loadNetworkBanana(JNIEnv *env, jobject thiz, jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Leer la red
+    neuralNetwork = cv::dnn::readNet(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Banana_loadCocoBanana(JNIEnv *env, jobject thiz, jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Llamar a la función para cargar las clases COCO
+    clases = loadLabelsCOCO(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Uva_processCameraFrameUva(JNIEnv *env, jobject thiz, jlong input_mat_addr) {
+    // Obtener el objeto Mat desde la dirección pasada como argumento
+    Mat &frameMat = *(Mat *)input_mat_addr;
+    cvtColor(frameMat, frameMat, cv::COLOR_RGBA2RGB);
+
+    // Medir el tiempo de inicio para calcular FPS
+    auto startTime = chrono::high_resolution_clock::now();
+
+    // Procesar la imagen con la red
+    vector<Mat> detections = forwardNET(frameMat, neuralNetwork);
+    Mat processedImg = filterDetections(frameMat, detections, clases);
+
+    // Medir el tiempo de finalización y calcular FPS
+    auto endTime = chrono::high_resolution_clock::now();
+    auto elapsedTime = chrono::duration_cast<chrono::duration<double>>(endTime - startTime).count();
+    double fps = 1.0 / elapsedTime;  // FPS = 1 / tiempo transcurrido en segundos
+
+    // Medir el uso de memoria RAM
+    long ramUsage = getMemoryUsage();
+    double ramUsageMB = static_cast<double>(ramUsage) / 1024.0;  // Convertir a MB
+
+    // Mostrar el tiempo de inferencia
+    string label = format("Inference time: %.2f s", elapsedTime);
+    putText(processedImg, label, Point(20, 40), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar los FPS con dos decimales
+    string fpsLabel = format("FPS: %.2f", fps);
+    putText(processedImg, fpsLabel, Point(20, 80), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar el uso de memoria RAM
+    string ramLabel = format("RAM Usage: %.2f MB", ramUsageMB);
+    putText(processedImg, ramLabel, Point(20, 120), FONT_FACE, FONT_SCALE, RED);
+
+    // Copiar el resultado procesado de vuelta al objeto Mat original
+    processedImg.copyTo(frameMat);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Uva_loadNetworkUva(JNIEnv *env, jobject thiz, jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Leer la red
+    neuralNetwork = cv::dnn::readNet(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Uva_loadCocoUva(JNIEnv *env, jobject thiz, jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Llamar a la función para cargar las clases COCO
+    clases = loadLabelsCOCO(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Mango_processCameraFrameMango(JNIEnv *env, jobject thiz,
+                                                      jlong input_mat_addr) {
+    // Obtener el objeto Mat desde la dirección pasada como argumento
+    Mat &frameMat = *(Mat *)input_mat_addr;
+    cvtColor(frameMat, frameMat, cv::COLOR_RGBA2RGB);
+
+    // Medir el tiempo de inicio para calcular FPS
+    auto startTime = chrono::high_resolution_clock::now();
+
+    // Procesar la imagen con la red
+    vector<Mat> detections = forwardNET(frameMat, neuralNetwork);
+    Mat processedImg = filterDetections(frameMat, detections, clases);
+
+    // Medir el tiempo de finalización y calcular FPS
+    auto endTime = chrono::high_resolution_clock::now();
+    auto elapsedTime = chrono::duration_cast<chrono::duration<double>>(endTime - startTime).count();
+    double fps = 1.0 / elapsedTime;  // FPS = 1 / tiempo transcurrido en segundos
+
+    // Medir el uso de memoria RAM
+    long ramUsage = getMemoryUsage();
+    double ramUsageMB = static_cast<double>(ramUsage) / 1024.0;  // Convertir a MB
+
+    // Mostrar el tiempo de inferencia
+    string label = format("Inference time: %.2f s", elapsedTime);
+    putText(processedImg, label, Point(20, 40), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar los FPS con dos decimales
+    string fpsLabel = format("FPS: %.2f", fps);
+    putText(processedImg, fpsLabel, Point(20, 80), FONT_FACE, FONT_SCALE, RED);
+
+    // Mostrar el uso de memoria RAM
+    string ramLabel = format("RAM Usage: %.2f MB", ramUsageMB);
+    putText(processedImg, ramLabel, Point(20, 120), FONT_FACE, FONT_SCALE, RED);
+
+    // Copiar el resultado procesado de vuelta al objeto Mat original
+    processedImg.copyTo(frameMat);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Mango_loadNetworkMango(JNIEnv *env, jobject thiz, jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Leer la red
+    neuralNetwork = cv::dnn::readNet(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_afinal_Mango_loadCocoMango(JNIEnv *env, jobject thiz, jstring absolute_path) {
+    // Convertir jstring a const char*
+    const char *path = env->GetStringUTFChars(absolute_path, 0);
+
+    // Llamar a la función para cargar las clases COCO
+    clases = loadLabelsCOCO(path);
+
+    // Liberar la memoria asignada por GetStringUTFChars
+    env->ReleaseStringUTFChars(absolute_path, path);
 }
